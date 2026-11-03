@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Web Media Converter (MP4, MP3, WAV, H.265)</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <!-- Stabiles FFmpeg.wasm v0.10.18 (läuft perfekt im Browser & GitHub Pages) -->
+    <script src="https://unpkg.com/@ffmpeg/ffmpeg@0.10.18/dist/ffmpeg.min.js"></script>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen flex flex-col items-center justify-center p-4">
+
+    <div class="max-w-xl w-full bg-slate-800 rounded-xl shadow-2xl p-6 border border-slate-700">
+        <h1 class="text-2xl font-bold mb-2 text-center text-indigo-400">Browser Media Converter</h1>
+        <p class="text-sm text-slate-400 text-center mb-6">Konvertiere MP4, MP3, WAV und Videos direkt im Browser.</p>
+
+        <!-- Status / FFmpeg Ladeanzeige -->
+        <div id="status-box" class="mb-4 p-3 bg-amber-900/50 border border-amber-600 rounded-lg text-amber-200 text-sm flex items-center justify-between">
+            <span id="status-text">Lade FFmpeg Engine... Bitte warten.</span>
+            <div id="spinner" class="inline-block w-4 h-4 border-2 border-amber-200 border-t-transparent rounded-full animate-spin"></div>
+        </div>
+
+        <form id="convert-form" class="space-y-4 opacity-50 pointer-events-none">
+            <!-- Datei Upload -->
+            <div>
+                <label class="block text-sm font-medium mb-1">Mediendatei auswählen</label>
+                <input type="file" id="file-input" class="w-full text-sm text-slate-400 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-indigo-600 file:text-white hover:file:bg-indigo-700 cursor-pointer bg-slate-900/50 rounded-lg border border-slate-700">
+            </div>
+
+            <!-- Zielformat -->
+            <div>
+                <label class="block text-sm font-medium mb-1">Zielformat</label>
+                <select id="target-format" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-sm focus:ring-2 focus:ring-indigo-500 outline-none">
+                    <option value="mp3">MP3 (Audio)</option>
+                    <option value="wav">WAV (Audio)</option>
+                    <option value="mp4-h264">MP4 (Video - H.264)</option>
+                    <option value="mp4-h265">MP4 (Video - H.265 / HEVC)</option>
+                </select>
+            </div>
+
+            <!-- Optionen-Bereich -->
+            <div class="grid grid-cols-2 gap-4 bg-slate-900/40 p-3 rounded-lg border border-slate-700/50">
+                <!-- Bitrate -->
+                <div>
+                    <label class="block text-xs font-medium mb-1 text-slate-300">Audio Bitrate</label>
+                    <select id="audio-bitrate" class="w-full bg-slate-900 border border-slate-700 rounded p-1.5 text-xs">
+                        <option value="128k">128 kbps (Standard)</option>
+                        <option value="192k">192 kbps (Gut)</option>
+                        <option value="320k">320 kbps (Hoch)</option>
+                    </select>
+                </div>
+
+                <!-- Kanäle -->
+                <div>
+                    <label class="block text-xs font-medium mb-1 text-slate-300">Audio Kanäle</label>
+                    <select id="audio-channels" class="w-full bg-slate-900 border border-slate-700 rounded p-1.5 text-xs">
+                        <option value="2">Stereo (2)</option>
+                        <option value="1">Mono (1)</option>
+                    </select>
+                </div>
+
+                <!-- Lautstärke -->
+                <div class="col-span-2">
+                    <label class="block text-xs font-medium mb-1 text-slate-300">Lautstärke-Anpassung (Volume)</label>
+                    <select id="audio-volume" class="w-full bg-slate-900 border border-slate-700 rounded p-1.5 text-xs">
+                        <option value="1.0">Unverändert (1.0x)</option>
+                        <option value="1.5">Lauter (+50% / 1.5x)</option>
+                        <option value="2.0">Sehr laut (2.0x)</option>
+                        <option value="0.7">Leiser (-30% / 0.7x)</option>
+                    </select>
+                </div>
+            </div>
+
+            <!-- Fortschrittsbalken -->
+            <div id="progress-container" class="hidden space-y-1">
+                <div class="flex justify-between text-xs text-slate-400">
+                    <span id="progress-label">Konvertiere...</span>
+                    <span id="progress-percent">0%</span>
+                </div>
+                <div class="w-full bg-slate-700 rounded-full h-2 overflow-hidden">
+                    <div id="progress-bar" class="bg-indigo-500 h-full w-0 transition-all duration-150"></div>
+                </div>
+            </div>
+
+            <!-- Absenden Button -->
+            <button type="submit" id="submit-btn" class="w-full bg-indigo-600 hover:bg-indigo-700 font-medium py-2.5 px-4 rounded-lg transition duration-200 cursor-pointer shadow-lg">
+                Konvertierung starten
+            </button>
+        </form>
+
+        <!-- Ergebnis-Bereich -->
+        <div id="result-box" class="hidden mt-6 p-4 bg-emerald-900/40 border border-emerald-600 rounded-lg text-center">
+            <p class="text-sm text-emerald-300 mb-2">Konvertierung erfolgreich abgeschlossen!</p>
+            <a id="download-link" class="inline-block bg-emerald-600 hover:bg-emerald-700 text-white font-medium py-2 px-4 rounded-lg text-sm transition duration-200 shadow-md">
+                Datei herunterladen
+            </a>
+        </div>
+    </div>
+
+    <script>
+        const { createFFmpeg, fetchFile } = FFmpeg;
+        const ffmpeg = createFFmpeg({ log: true });
+
+        const statusBox = document.getElementById('status-box');
+        const statusText = document.getElementById('status-text');
+        const spinner = document.getElementById('spinner');
+        const form = document.getElementById('convert-form');
+        const submitBtn = document.getElementById('submit-btn');
+        const progressContainer = document.getElementById('progress-container');
+        const progressBar = document.getElementById('progress-bar');
+        const progressPercent = document.getElementById('progress-percent');
+        const resultBox = document.getElementById('result-box');
+        const downloadLink = document.getElementById('download-link');
+
+        async function initFFmpeg() {
+            try {
+                await ffmpeg.load();
+                statusBox.className = "mb-4 p-3 bg-emerald-900/50 border border-emerald-600 rounded-lg text-emerald-200 text-sm flex items-center justify-between";
+                statusText.textContent = "FFmpeg bereit!";
+                spinner.style.display = 'none';
+                form.classList.remove('opacity-50', 'pointer-events-none');
+            } catch (error) {
+                console.error(error);
+                statusBox.className = "mb-4 p-3 bg-rose-900/50 border border-rose-600 rounded-lg text-rose-200 text-sm";
+                statusText.textContent = "Fehler beim Laden von FFmpeg. Bitte Seite neu laden.";
+                spinner.style.display = 'none';
+            }
+        }
+
+        initFFmpeg();
+
+        // Fortschritt via FFmpeg Logger abfangen
+        ffmpeg.setProgress(({ ratio }) => {
+            const percent = Math.max(0, Math.min(100, Math.round(ratio * 100)));
+            progressBar.style.width = `${percent}%`;
+            progressPercent.textContent = `${percent}%`;
+        });
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const fileInput = document.getElementById('file-input');
+            if (fileInput.files.length === 0) {
+                alert('Bitte wähle zuerst eine Datei aus.');
+                return;
+            }
+
+            const file = fileInput.files[0];
+            const targetFormat = document.getElementById('target-format').value;
+            const bitrate = document.getElementById('audio-bitrate').value;
+            const channels = document.getElementById('audio-channels').value;
+            const volume = document.getElementById('audio-volume').value;
+
+            submitBtn.disabled = true;
+            submitBtn.textContent = 'Konvertiere...';
+            progressContainer.classList.remove('hidden');
+            resultBox.classList.add('hidden');
+            progressBar.style.width = '0%';
+            progressPercent.textContent = '0%';
+
+            try {
+                const inputName = 'input_file';
+                let outputExt = 'mp3';
+                let outputName = 'output.mp3';
+                let args = [];
+
+                // Datei in das virtuelle FFmpeg-Dateisystem schreiben
+                ffmpeg.FS('writeFile', inputName, await fetchFile(file));
+
+                if (targetFormat === 'mp3') {
+                    outputExt = 'mp3';
+                    outputName = 'output.mp3';
+                    args = ['-i', inputName, '-b:a', bitrate, '-ac', channels, '-af', `volume=${volume}`, outputName];
+                } else if (targetFormat === 'wav') {
+                    outputExt = 'wav';
+                    outputName = 'output.wav';
+                    args = ['-i', inputName, '-ac', channels, '-af', `volume=${volume}`, outputName];
+                } else if (targetFormat === 'mp4-h264') {
+                    outputExt = 'mp4';
+                    outputName = 'output.mp4';
+                    args = ['-i', inputName, '-c:v', 'libx264', '-b:a', bitrate, '-ac', channels, '-af', `volume=${volume}`, outputName];
+                } else if (targetFormat === 'mp4-h265') {
+                    outputExt = 'mp4';
+                    outputName = 'output_h265.mp4';
+                    args = ['-i', inputName, '-c:v', 'libx265', '-crf', '28', '-b:a', bitrate, '-ac', channels, '-af', `volume=${volume}`, outputName];
+                }
+
+                await ffmpeg.run(...args);
+
+                const data = ffmpeg.FS('readFile', outputName);
+                const blob = new Blob([data.buffer], { type: targetFormat.includes('mp4') ? 'video/mp4' : (targetFormat === 'wav' ? 'audio/wav' : 'audio/mpeg') });
+                const url = URL.createObjectURL(blob);
+
+                downloadLink.href = url;
+                downloadLink.download = `konvertiert.${outputExt}`;
+                resultBox.classList.remove('hidden');
+            } catch (err) {
+                console.error(err);
+                alert('Ein Fehler ist bei der Konvertierung aufgetreten.');
+            } finally {
+                submitBtn.disabled = false;
+                submitBtn.textContent = 'Konvertierung starten';
+                progressContainer.classList.add('hidden');
+            }
+        });
+    </script>
+</body>
+</html>
